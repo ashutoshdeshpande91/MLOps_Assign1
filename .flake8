@@ -1,0 +1,13 @@
+[flake8]
+max-line-length = 100
+exclude =
+    .git,
+    .venv,
+    venv,
+    __pycache__,
+    mlruns,
+    notebooks
+per-file-ignores =
+    # matplotlib.use("Agg") must run before pyplot is imported
+    src/eda.py:E402
+    src/train.py:E402
