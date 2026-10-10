@@ -10,8 +10,12 @@ Usage (from the repo root):
     python src/train.py
     mlflow ui --backend-store-uri sqlite:///mlflow.db     # then open http://127.0.0.1:5000
 """
+import json
+import platform
+from datetime import datetime, timezone
 from pathlib import Path
 
+import joblib
 import matplotlib
 
 matplotlib.use("Agg")  # no display needed (works in CI/Docker)
@@ -20,7 +24,9 @@ import mlflow
 import mlflow.sklearn
 import numpy as np
 import pandas as pd
+import sklearn
 from mlflow.models import infer_signature
+from mlflow.tracking import MlflowClient
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -52,6 +58,9 @@ RANDOM_STATE = 42
 TEST_SIZE = 0.2
 CV_FOLDS = 5
 RESULTS_DIR = Path("results")
+MODEL_DIR = Path("models")
+MODEL_PATH = MODEL_DIR / "heart_model.joblib"
+METADATA_PATH = MODEL_DIR / "model_metadata.json"
 SCORING = ["accuracy", "precision", "recall", "roc_auc"]
 
 TRACKING_URI = "sqlite:///mlflow.db"
@@ -175,7 +184,8 @@ def log_grid_candidates(model_name: str, search: GridSearchCV) -> None:
 def train_one_model(name, model, grid, cv, data):
     X_train, X_test, y_train, y_test = data
 
-    with mlflow.start_run(run_name=name):
+    with mlflow.start_run(run_name=name) as run:
+        run_id = run.info.run_id
         mlflow.set_tag("run_type", "best_model")
         mlflow.log_params(
             {
@@ -231,7 +241,39 @@ def train_one_model(name, model, grid, cv, data):
             # cloudpickle is fine here because we trained and saved this model ourselves
             serialization_format="cloudpickle",
         )
-    return row
+    return row, best, run_id
+
+
+def save_final_model(name, estimator, row, run_id) -> None:
+    """Save the winning pipeline (preprocessing + model) as one reusable file.
+
+    The .joblib file contains the whole scikit-learn Pipeline, so loading it is
+    enough to go from raw patient features to a prediction. The JSON file next to
+    it records what the model expects and how it was trained.
+    """
+    MODEL_DIR.mkdir(exist_ok=True)
+    joblib.dump(estimator, MODEL_PATH)
+
+    metadata = {
+        "model_name": name,
+        "trained_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "mlflow_run_id": run_id,
+        "best_params": row["best_params"],
+        "metrics": {k: round(float(v), 4) for k, v in row.items()
+                    if k.startswith(("cv_", "test_")) and "std" not in k},
+        "input_features": NUMERIC_FEATURES + CATEGORICAL_FEATURES,
+        "numeric_features": NUMERIC_FEATURES,
+        "categorical_features": CATEGORICAL_FEATURES,
+        "target": TARGET,
+        "random_state": RANDOM_STATE,
+        "python_version": platform.python_version(),
+        "scikit_learn_version": sklearn.__version__,
+    }
+    METADATA_PATH.write_text(json.dumps(metadata, indent=2))
+    print(f"Saved final model to {MODEL_PATH} and metadata to {METADATA_PATH}")
+
+    # mark the selected run in the MLflow UI
+    MlflowClient().set_tag(run_id, "selected_for_serving", "true")
 
 
 def main() -> None:
@@ -245,10 +287,12 @@ def main() -> None:
     print(f"Train: {data[0].shape}, Test: {data[1].shape}")
 
     cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
-    rows = []
+    rows, fitted = [], {}
     for name, (model, grid) in get_candidates().items():
         print(f"\n=== {name} ===")
-        rows.append(train_one_model(name, model, grid, cv, data))
+        row, estimator, run_id = train_one_model(name, model, grid, cv, data)
+        rows.append(row)
+        fitted[name] = (estimator, run_id)
 
     results = pd.DataFrame(rows).set_index("model")
     RESULTS_DIR.mkdir(exist_ok=True)
@@ -258,6 +302,10 @@ def main() -> None:
     print("\nModel comparison:\n", results[show].round(3).T)
     best = results["cv_roc_auc"].idxmax()
     print(f"\nBest model by CV ROC-AUC: {best}")
+
+    best_row = next(r for r in rows if r["model"] == best)
+    best_estimator, best_run_id = fitted[best]
+    save_final_model(best, best_estimator, best_row, best_run_id)
     print("\nView runs with:  mlflow ui --backend-store-uri sqlite:///mlflow.db")
 
 
