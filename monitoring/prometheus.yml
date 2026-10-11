@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 5s      # short interval so the dashboard reacts quickly in a demo
+
+scrape_configs:
+  - job_name: heart-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]   # service name from docker-compose.yml

@@ -72,3 +72,27 @@ def test_requests_are_logged(client, caplog):
         client.post("/predict", json=SAMPLE_PATIENT)
     text = caplog.text
     assert "path=/predict" in text and "status=200" in text
+
+
+def test_metrics_endpoint_reports_requests_and_predictions(client):
+    client.post("/predict", json=SAMPLE_PATIENT)
+    client.get("/health")
+    text = client.get("/metrics").text
+    assert 'api_requests_total{method="POST",path="/predict",status="200"}' in text
+    assert "api_request_duration_seconds_bucket" in text
+    assert "api_predictions_total" in text
+    assert "api_prediction_confidence_count" in text
+
+
+def test_metrics_endpoint_does_not_count_itself(client):
+    client.get("/metrics")
+    text = client.get("/metrics").text
+    assert 'path="/metrics"' not in text
+
+
+def test_unknown_paths_share_one_metric_label(client):
+    client.get("/does-not-exist-1")
+    client.get("/does-not-exist-2")
+    text = client.get("/metrics").text
+    assert 'path="unmatched"' in text
+    assert "does-not-exist" not in text
