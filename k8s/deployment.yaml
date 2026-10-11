@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: heart-api
+  labels:
+    app: heart-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: heart-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: heart-api
+    spec:
+      containers:
+        - name: heart-api
+          image: heart-api:latest
+          # The image is built locally and loaded into Minikube, so never pull it
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          env:
+            - name: LOG_LEVEL
+              value: "INFO"
+          readinessProbe:          # receive traffic only when the model is loaded
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:           # restart the pod if it stops responding
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
