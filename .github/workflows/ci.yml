@@ -25,12 +25,13 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements.txt
+            requirements-api.txt
             requirements-dev.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements.txt -r requirements-api.txt -r requirements-dev.txt
 
       - name: Lint with flake8
         run: flake8 src tests
@@ -83,3 +84,38 @@ jobs:
             models/
             mlruns/
             mlflow.db
+
+  docker-build:
+    name: Build and test Docker image
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t heart-api:ci .
+
+      - name: Run container
+        run: docker run -d --name heart-api -p 8000:8000 heart-api:ci
+
+      - name: Wait for the API to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fs http://localhost:8000/health; then echo; exit 0; fi
+            sleep 2
+          done
+          echo "API did not become healthy"
+          docker logs heart-api
+          exit 1
+
+      - name: Send a sample prediction request
+        run: |
+          curl -fs -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"age":63,"sex":1,"cp":1,"trestbps":145,"chol":233,"fbs":1,"restecg":2,"thalach":150,"exang":0,"oldpeak":2.3,"slope":3,"ca":0,"thal":6}'
+          echo
+
+      - name: Show container logs
+        if: always()
+        run: docker logs heart-api
